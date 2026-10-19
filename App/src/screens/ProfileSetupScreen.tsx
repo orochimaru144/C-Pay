@@ -1,4 +1,7 @@
+import { Logger } from '../utils/logger';
 import React, { useRef, useState } from 'react';
+
+// Profile setup screen: helps complete user identity for the wallet.
 import {
   View,
   Text,
@@ -15,7 +18,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../services/supabase';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { Button, OnboardingProgress, FormField, InfoBanner } from '../components';
 import { AlertManager } from '../utils/alert';
 import { generateCPayId } from '../utils/cpayId';
@@ -26,7 +29,8 @@ interface ProfileSetupScreenProps {
 }
 
 export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigation, route }) => {
-  const { walletAddress, phoneNumber } = route.params;
+  useTheme();
+  const { walletAddress } = route.params;
   const [fullName, setFullName] = useState('');
   const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -52,13 +56,13 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
         setProfilePhoto(result.assets[0].uri);
       }
     } catch (error) {
-      console.error('Error picking image:', error);
+      Logger.error('Error picking image:', error);
     }
   };
 
   const uploadProfilePhoto = async (photoUri: string, address: string): Promise<string | null> => {
     try {
-      console.log('Uploading profile photo...');
+      Logger.info('Uploading profile photo...');
 
       // Read file as base64
       const base64 = await fetch(photoUri)
@@ -95,7 +99,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
         });
 
       if (uploadError) {
-        console.error('Upload error:', uploadError);
+        Logger.error('Upload error:', uploadError);
         return null;
       }
 
@@ -106,14 +110,13 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
 
       return urlData.publicUrl;
     } catch (error) {
-      console.error('Error uploading photo:', error);
+      Logger.error('Error uploading photo:', error);
       return null;
     }
   };
 
   const completeProfileSetup = async (
     name: string,
-    phoneToSave: string | null,
     emailToSave: string | null,
     cpayId: string,
     photoUri: string | null
@@ -138,7 +141,6 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
           wallet_address: walletAddress,
           display_name: name,
           email: emailToSave,
-          phone_number: phoneToSave,
           cpay_id: cpayId,
           profile_photo_url: photoUrl,
         },
@@ -146,7 +148,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
       );
 
     if (dbError) {
-      console.error('Database error:', dbError);
+      Logger.error('Database error:', dbError);
     }
   };
 
@@ -166,17 +168,10 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
       completingRef.current = true;
       setLoading(true);
 
-      // Check if phone number is development number
-      const isDevMode = process.env.EXPO_PUBLIC_DEV_MODE === 'true';
-      const devPhoneNumber = process.env.EXPO_PUBLIC_DEV_PHONE || '+911234567890';
-      const isDevPhone = isDevMode && phoneNumber === devPhoneNumber;
-      
-      // Email-only verification can continue without a phone number.
-      const phoneToSave = !phoneNumber || isDevPhone ? null : phoneNumber;
       const emailToSave = await AsyncStorage.getItem('user_email');
-      
+
       // Generate a public C-Pay ID for display and receiving payments.
-      const cpayId = generateCPayId(emailToSave || phoneToSave || phoneNumber || '', walletAddress);
+      const cpayId = generateCPayId(emailToSave || '', walletAddress);
 
       // Save locally
       const localWrites = [
@@ -191,19 +186,15 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
         localWrites.push(AsyncStorage.setItem('profile_photo', profilePhoto));
       }
 
-      if (phoneToSave) {
-        localWrites.push(AsyncStorage.setItem('phone_number', phoneNumber));
-      }
-
       await Promise.all(localWrites);
 
       // Complete profile upload/cloud save here so the next screen opens cleanly.
-      await completeProfileSetup(trimmedName, phoneToSave, emailToSave, cpayId, profilePhoto);
+      await completeProfileSetup(trimmedName, emailToSave, cpayId, profilePhoto);
 
       // Cloud backup protects the wallet before optional biometric setup.
       navigation.replace('CloudBackupSetup');
     } catch (error) {
-      console.error('Profile setup error:', error);
+      Logger.error('Profile setup error:', error);
       completingRef.current = false;
       setLoading(false);
       AlertManager.alert('Error', 'Failed to save profile. Please try again.', undefined, { type: 'error' });
@@ -253,7 +244,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
                 <Image source={{ uri: profilePhoto }} style={styles.photo} />
               ) : (
                 <View style={styles.photoPlaceholder}>
-                  <Ionicons name="camera-outline" size={30} color={COLORS.textSecondary} style={styles.photoPlaceholderIcon} />
+                  <Ionicons name="camera-outline" size={30} color={COLORS.textMuted} style={styles.photoPlaceholderIcon} />
                   <Text style={styles.photoPlaceholderText}>Add Photo</Text>
                 </View>
               )}
@@ -280,7 +271,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
             autoCorrect={false}
             maxLength={50}
             editable={!loading}
-            helper="This name will be visible to merchants and other users"
+            helper="This name will be visible to other users"
           />
 
           {/* Info Card */}
@@ -316,7 +307,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -334,7 +325,7 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    backgroundColor: COLORS.whiteOverlayFaint,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: SPACING.md,
@@ -369,7 +360,7 @@ const styles = StyleSheet.create({
     color: COLORS.error,
   },
   optional: {
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     fontWeight: '400',
   },
   photoContainer: {
@@ -398,7 +389,7 @@ const styles = StyleSheet.create({
   },
   photoPlaceholderText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     fontWeight: '500',
   },
   removePhotoButton: {
@@ -416,15 +407,15 @@ const styles = StyleSheet.create({
   },
   footer: {
     fontSize: FONT_SIZES.xs,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: SPACING.lg,
     paddingHorizontal: SPACING.md,
   },
   loadingText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: SPACING.md,
   },
-});
+}));

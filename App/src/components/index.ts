@@ -10,10 +10,7 @@ export { CustomAlert, CustomAlertProvider, showCustomAlert } from './CustomAlert
 export { OnboardingProgress } from './OnboardingProgress';
 export { PaymentReviewSheet } from './PaymentReviewSheet';
 export type { PaymentReviewSheetProps } from './PaymentReviewSheet';
-export { MerchantQRCard } from './MerchantQRCard';
-export type { MerchantQRCardProps } from './MerchantQRCard';
-export { MerchantQRActions } from './MerchantQRActions';
-export type { MerchantQRActionsProps } from './MerchantQRActions';
-
 // Reusable layout primitives (screen/component design system)
 export * from './layout';
+
+export * from './InitialAvatar';

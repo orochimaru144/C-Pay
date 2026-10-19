@@ -1,4 +1,7 @@
+import { Logger } from '../utils/logger';
 import React, { useRef, useState } from 'react';
+
+// Confirm PIN screen: final wallet confirmation before activation.
 import {
   View,
   Text,
@@ -12,7 +15,7 @@ import { OnboardingProgress } from '../components/OnboardingProgress';
 import { Screen } from '../components';
 import { cachePinForSession, createWallet } from '../services/wallet';
 import { supabase } from '../services/supabase';
-import { COLORS, SPACING, TYPOGRAPHY } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, createThemedStyles, useTheme } from '../constants/theme';
 import { AlertManager } from '../utils/alert';
 import { generateCPayId } from '../utils/cpayId';
 
@@ -27,7 +30,6 @@ const waitForUiPaint = () =>
 
 const saveInitialUserRecord = (
   walletAddress: string,
-  phoneNumber: string,
   cpayId: string
 ) => {
   void (async () => {
@@ -39,7 +41,6 @@ const saveInitialUserRecord = (
           {
             wallet_address: walletAddress,
             email: verifiedEmail || null,
-            phone_number: phoneNumber || null,
             cpay_id: cpayId,
             biometric_enabled: false,
           },
@@ -47,10 +48,10 @@ const saveInitialUserRecord = (
         );
 
       if (dbError) {
-        console.error('Database error:', dbError);
+        Logger.error('Database error:', dbError);
       }
     } catch (error) {
-      console.error('Database save failed:', error);
+      Logger.error('Database save failed:', error);
     }
   })();
 };
@@ -64,7 +65,8 @@ export const ConfirmPINScreen: React.FC<ConfirmPINScreenProps> = ({
   navigation,
   route,
 }) => {
-  const { pin: originalPin, phoneNumber } = route.params;
+  useTheme();
+  const { pin: originalPin } = route.params;
   const [confirmPin, setConfirmPin] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -99,7 +101,7 @@ export const ConfirmPINScreen: React.FC<ConfirmPINScreenProps> = ({
 
       // Save wallet address locally for profile and optional biometric setup.
       const verifiedEmail = await AsyncStorage.getItem('user_email');
-      const cpayId = generateCPayId(verifiedEmail || phoneNumber || '', walletAddress);
+      const cpayId = generateCPayId(verifiedEmail || '', walletAddress);
       await Promise.all([
         AsyncStorage.setItem('wallet_address', walletAddress),
         AsyncStorage.setItem('cpay_id', cpayId),
@@ -108,14 +110,11 @@ export const ConfirmPINScreen: React.FC<ConfirmPINScreenProps> = ({
       cachePinForSession(originalPin);
 
       // Cloud save should not block local wallet creation or onboarding progress.
-      saveInitialUserRecord(walletAddress, phoneNumber || '', cpayId);
+      saveInitialUserRecord(walletAddress, cpayId);
 
-      navigation.replace('ProfileSetup', { 
-        walletAddress,
-        phoneNumber: phoneNumber || '',
-      });
+      navigation.replace('ProfileSetup', { walletAddress });
     } catch (err) {
-      console.error('Wallet creation error:', err);
+      Logger.error('Wallet creation error:', err);
       AlertManager.alert('Error', 'Failed to create wallet. Please try again.');
       setConfirmPin('');
       submittingRef.current = false;
@@ -169,7 +168,7 @@ export const ConfirmPINScreen: React.FC<ConfirmPINScreenProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   content: {
     flex: 1,
     paddingHorizontal: SPACING.lg,
@@ -193,7 +192,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
   pinSection: {
@@ -206,6 +205,6 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: SPACING.md,
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
   },
-});
+}));

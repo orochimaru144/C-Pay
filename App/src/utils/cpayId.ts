@@ -1,9 +1,10 @@
+import { Logger } from './logger';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../services/supabase';
 
 /**
  * C-Pay ID System - User-friendly identifier instead of wallet addresses
- * Format: email-handle-or-phone@cpay+walletHash
+ * Format: email-handle@cpay+walletHash
  * Example: soumen0818@cpayk8f3qz
  *
  * This is ONLY for UI display. Payment operations still use actual Stellar accounts.
@@ -52,13 +53,6 @@ function isGeneratedCPayIdOutdated(
   return Boolean(preferredIdentifier) && cpayId.toLowerCase() !== generateCPayId(preferredIdentifier, walletAddress);
 }
 
-async function getStoredPhoneNumber(): Promise<string | null> {
-  return (
-    await AsyncStorage.getItem('phone_number') ||
-    await AsyncStorage.getItem('user_phone')
-  );
-}
-
 async function getStoredEmail(): Promise<string | null> {
   return AsyncStorage.getItem('user_email');
 }
@@ -77,13 +71,12 @@ function normalizeCPayHandle(identifier: string): string {
     return emailHandle.length >= 3 ? emailHandle : 'user';
   }
 
-  const phone10Digit = trimmed.replace(/\D/g, '').slice(-10);
-  return phone10Digit || 'user';
+  return 'user';
 }
 
 /**
- * Generate C-Pay ID from email/phone and wallet address.
- * @param identifier - User email or phone number.
+ * Generate C-Pay ID from the verified email and wallet address.
+ * @param identifier - Verified user email.
  * @param walletAddress - Stellar account address
  * @returns C-Pay ID (e.g., "soumen0818@cpayk8f3qz")
  */
@@ -106,21 +99,17 @@ export async function getCurrentUserCPayId(): Promise<string | null> {
       return null;
     }
 
-    const [localEmail, localPhone] = await Promise.all([
-      getStoredEmail(),
-      getStoredPhoneNumber(),
-    ]);
-    const localIdentifier = localEmail || localPhone || '';
-    const localId = generateCPayId(localIdentifier, walletAddress);
+    const localEmail = await getStoredEmail();
+    const localId = generateCPayId(localEmail || '', walletAddress);
 
     // Fetch from database first, then self-heal missing/legacy IDs.
     const { data, error } = await supabase
       .from('users')
-      .select('cpay_id, email, phone_number')
+      .select('cpay_id, email')
       .eq('wallet_address', walletAddress)
       .single();
 
-    const preferredIdentifier = data?.email || localEmail || data?.phone_number || localPhone || '';
+    const preferredIdentifier = data?.email || localEmail || '';
     if (!error && data?.cpay_id && !isGeneratedCPayIdOutdated(data.cpay_id, preferredIdentifier, walletAddress)) {
       await AsyncStorage.setItem('cpay_id', data.cpay_id);
       return data.cpay_id;
@@ -139,14 +128,13 @@ export async function getCurrentUserCPayId(): Promise<string | null> {
 
     return generatedId || localId;
   } catch (error) {
-    console.error('Error getting current user C-Pay ID:', error);
+    Logger.error('Error getting current user C-Pay ID:', error);
     const walletAddress = await AsyncStorage.getItem('wallet_address');
     if (!walletAddress) {
       return null;
     }
     const email = await getStoredEmail();
-    const phone = await getStoredPhoneNumber();
-    return generateCPayId(email || phone || '', walletAddress);
+    return generateCPayId(email || '', walletAddress);
   }
 }
 
@@ -172,7 +160,7 @@ export async function getCPayIdByWallet(walletAddress: string): Promise<string |
 
     return null;
   } catch (error) {
-    console.error('Error fetching C-Pay ID:', error);
+    Logger.error('Error fetching C-Pay ID:', error);
     return null;
   }
 }
@@ -233,16 +221,6 @@ export function extractLast4FromCPayId(cpayId: string): string | null {
 }
 
 /**
- * Extract phone number from C-Pay ID
- * @param cpayId - C-Pay ID
- * @returns Phone number (10 digits) or null
- */
-export function extractPhoneFromCPayId(cpayId: string): string | null {
-  const match = cpayId.match(/^(\d{10})@cpay/);
-  return match ? match[1] : null;
-}
-
-/**
  * Get wallet address from C-Pay ID using the public user profile lookup.
  * @param cpayId - C-Pay ID to look up
  * @returns Wallet address or null if not found
@@ -261,7 +239,7 @@ export async function getWalletAddressFromCPayId(cpayId: string): Promise<string
 
     return null;
   } catch (error) {
-    console.error('Error getting wallet address from C-Pay ID:', error);
+    Logger.error('Error getting wallet address from C-Pay ID:', error);
     return null;
   }
 }

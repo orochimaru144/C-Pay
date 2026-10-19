@@ -38,8 +38,8 @@ export const A11Y = {
   // Buttons
   CONFIRM_PAYMENT: 'Confirm payment',
   CANCEL_PAYMENT: 'Cancel payment',
-  SEND_CREDITS: 'Send credits',
-  CLAIM_CREDITS: 'Claim pilot credits',
+  SEND_CREDITS: 'Send USDC',
+  CLAIM_CREDITS: 'Claim testnet USDC',
   VIEW_HISTORY: 'View transaction history',
   ADD_MONEY: 'Add money',
 
@@ -55,7 +55,6 @@ export const A11Y = {
     `${params.direction} ${params.amount} ${params.direction === 'Received from' ? 'from' : 'to'} ${params.counterparty}. ${params.status}`,
 
   // QR
-  MERCHANT_QR_CODE: (businessName: string) => `QR code for ${businessName}`,
   USER_QR_CODE: 'Your personal C-Pay QR code',
 
   // Quick-amount chips
@@ -63,7 +62,6 @@ export const A11Y = {
 
   // Profile photo
   PROFILE_PHOTO: (name: string) => `Profile photo for ${name}`,
-  MERCHANT_LOGO: (name: string) => `Logo for ${name}`,
 };
 
 // ─── Onboarding ───────────────────────────────────────────────────────────────
@@ -118,7 +116,7 @@ export const PIN = {
 
 export const HOME = {
   BALANCE_CARD_HINT: 'Your current balance',
-  PILOT_ONLY_HINT: 'Pilot credits only — no real currency',
+  PILOT_ONLY_HINT: 'Testnet USDC only — no monetary value',
   RECENT_TRANSACTIONS: 'Recent Transactions',
   SEE_ALL: 'See All',
   NO_TRANSACTIONS_TITLE: 'No Transactions Yet',
@@ -129,7 +127,7 @@ export const HOME = {
 // ─── Payments ─────────────────────────────────────────────────────────────────
 
 export const PAYMENT = {
-  SEND_TITLE: 'Send Credits',
+  SEND_TITLE: 'Send USDC',
   RECIPIENT_LABEL: 'To (C-Pay ID or wallet address)',
   RECIPIENT_PLACEHOLDER: 'user@cpay… or G…',
   AMOUNT_LABEL: 'Amount',
@@ -139,7 +137,6 @@ export const PAYMENT = {
   CONFIRM_AND_PAY: 'Confirm & Pay',
   CANCEL: 'Cancel',
   SENDING_TO: 'Sending to',
-  PAYING_MERCHANT: 'Paying merchant',
   NETWORK_FEE_SPONSORED: 'Sponsored by C-Pay',
   UNLOCK_HINT: "You'll confirm with your PIN or biometrics next.",
   SUCCESS_TITLE: 'Payment Sent',
@@ -169,7 +166,7 @@ export const TRANSACTION = {
   TO_LABEL: 'To',
   TYPE_LABEL: 'Type',
   METHOD_LABEL: 'Payment Method',
-  NOTE_LABEL: 'Note/Merchant',
+  NOTE_LABEL: 'Note',
   HASH_LABEL: 'Transaction Hash',
 };
 
@@ -187,13 +184,10 @@ export const PROFILE = {
   EDIT_PHOTO: 'Change profile photo',
   SECURITY_SECTION: 'Security',
   PREFERENCES_SECTION: 'Preferences',
-  MERCHANT_SECTION: 'Merchant',
   SIGN_OUT: 'Sign out',
   CHANGE_PIN: 'Change PIN',
   BIOMETRIC_LABEL: 'Biometric unlock',
   NOTIFICATIONS_LABEL: 'Notifications',
-  BECOME_MERCHANT: 'Become a Merchant',
-  MERCHANT_DASHBOARD: 'Merchant Dashboard',
 };
 
 // ─── QR ───────────────────────────────────────────────────────────────────────
@@ -209,27 +203,6 @@ export const QR = {
   SCAN_BUTTON: 'Scan to Pay',
   SHOW_QR_BUTTON: 'Show QR',
   CREATE_QR_BUTTON: 'Create QR',
-};
-
-// ─── Merchant ─────────────────────────────────────────────────────────────────
-
-export const MERCHANT = {
-  REGISTER_TITLE: 'Become a Merchant',
-  DASHBOARD_TITLE: 'Merchant Dashboard',
-  TRANSACTIONS_TITLE: 'Merchant Transactions',
-  QR_GENERATOR_TITLE: 'Payment QR',
-  GLOBAL_QR_TITLE: 'My QR Code',
-  BUSINESS_NAME_LABEL: 'Business name',
-  OWNER_NAME_LABEL: "Owner's name",
-  CATEGORY_LABEL: 'Category',
-  ADDRESS_LABEL: 'Business address',
-  PHONE_LABEL: 'Contact phone',
-  EMAIL_LABEL: 'Business email',
-  REGISTER_BUTTON: 'Register as Merchant',
-  TOTAL_REVENUE_LABEL: 'Total Revenue',
-  TOTAL_TX_LABEL: 'Total Transactions',
-  NO_TRANSACTIONS: 'No payments yet',
-  NO_TRANSACTIONS_DESC: 'Payments you receive will appear here',
 };
 
 // ─── Wallet Backup & Restore ──────────────────────────────────────────────────
@@ -266,9 +239,9 @@ export const STATUS = {
 // ─── Add money ────────────────────────────────────────────────────────────────
 
 export const ADD_MONEY = {
-  TITLE: 'Claim Pilot Credits',
+  TITLE: 'Claim Testnet USDC',
   CLAIM_BUTTON: 'Claim',
-  CLAIM_SUCCESS_TITLE: 'Credits Added',
+  CLAIM_SUCCESS_TITLE: 'Testnet USDC Added',
   CLAIM_COOLDOWN_TITLE: 'Next Claim Available',
   CLAIM_ERROR_TITLE: 'Credit Claim Failed',
   COOLDOWN_HINT: (time: string) => `You can claim again in ${time}`,

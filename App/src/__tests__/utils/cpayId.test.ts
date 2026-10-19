@@ -8,7 +8,6 @@ import {
   getWalletFingerprint,
   isValidCPayId,
   extractLast4FromCPayId,
-  extractPhoneFromCPayId,
 } from '../../utils/cpayId';
 
 // Fixed wallet address used across tests
@@ -75,10 +74,9 @@ describe('generateCPayId', () => {
     expect(id.startsWith('user@cpay')).toBe(true);
   });
 
-  test('uses last 10 digits for a phone-number identifier', () => {
+  test('falls back to "user" for a non-email identifier (auth is email-only)', () => {
     const id = generateCPayId('+919876543210', WALLET_A);
-    // normalizeCPayHandle strips non-digits and slices last 10
-    expect(id.startsWith('9876543210@cpay')).toBe(true);
+    expect(id.startsWith('user@cpay')).toBe(true);
   });
 
   test('falls back to "user" when identifier is empty', () => {
@@ -142,17 +140,5 @@ describe('extractLast4FromCPayId', () => {
   test('returns null for a non-C-Pay ID string', () => {
     expect(extractLast4FromCPayId('alice@gmail.com')).toBeNull();
     expect(extractLast4FromCPayId('')).toBeNull();
-  });
-});
-
-describe('extractPhoneFromCPayId', () => {
-  test('extracts the phone number when the handle is exactly 10 digits', () => {
-    const id = '9876543210@cpayk8f3qz';
-    expect(extractPhoneFromCPayId(id)).toBe('9876543210');
-  });
-
-  test('returns null when the handle is not a 10-digit number', () => {
-    expect(extractPhoneFromCPayId('alice@cpayk8f3qz')).toBeNull();
-    expect(extractPhoneFromCPayId('123@cpayk8f3qz')).toBeNull();
   });
 });

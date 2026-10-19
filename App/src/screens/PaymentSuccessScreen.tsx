@@ -1,4 +1,7 @@
+import { Logger } from '../utils/logger';
 import React, { useEffect, useRef, useState } from 'react';
+
+// Payment success screen: completion confirmation with receipt details.
 import {
   View,
   Text,
@@ -13,7 +16,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { captureRef } from 'react-native-view-shot';
 import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { TransactionDetailModal, TransactionDetail } from '../components/TransactionDetailModal';
 import { formatMoneyAmount } from '../utils/currency';
 import { formatTransactionHash, getExplorerUrl } from '../services/blockchain';
@@ -32,7 +35,6 @@ interface PaymentSuccessScreenProps {
       processingTime?: number; // in seconds
       timestamp?: string;
       note?: string;
-      isMerchantPayment?: boolean;
     };
   };
 }
@@ -41,6 +43,7 @@ export const PaymentSuccessScreen: React.FC<PaymentSuccessScreenProps> = ({
   navigation,
   route,
 }) => {
+  useTheme();
   const {
     transactionHash,
     fromAddress,
@@ -50,7 +53,6 @@ export const PaymentSuccessScreen: React.FC<PaymentSuccessScreenProps> = ({
     processingTime = 2,
     timestamp,
     note,
-    isMerchantPayment = false,
   } = route.params;
 
   const [currentTime] = useState(
@@ -122,7 +124,7 @@ export const PaymentSuccessScreen: React.FC<PaymentSuccessScreenProps> = ({
         });
       }
     } catch (error) {
-      console.error('Error sharing receipt:', error);
+      Logger.error('Error sharing receipt:', error);
     }
   };
 
@@ -138,14 +140,13 @@ export const PaymentSuccessScreen: React.FC<PaymentSuccessScreenProps> = ({
     amount: amount,
     status: 'success',
     created_at: new Date().toISOString(),
-    merchant_name: isMerchantPayment ? recipientName : undefined,
-    transaction_type: isMerchantPayment ? 'merchant' : 'personal',
+    transaction_type: 'personal',
   };
 
   return (
     <View style={styles.container}>
       <LinearGradient
-        colors={['#00D68F', '#00C882', '#00A86B']}
+        colors={COLORS.successGradient}
         style={styles.gradient}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -279,7 +280,7 @@ export const PaymentSuccessScreen: React.FC<PaymentSuccessScreenProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     flex: 1,
   },
@@ -306,7 +307,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: SPACING.md,
-    shadowColor: '#000',
+    shadowColor: COLORS.shadow,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 8,
@@ -324,7 +325,7 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: COLORS.textInverse,
     letterSpacing: 0.5,
-    textShadowColor: 'rgba(0, 0, 0, 0.1)',
+    textShadowColor: COLORS.textShadow,
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
   },
@@ -336,7 +337,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.xs,
     borderRadius: BORDER_RADIUS.full,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: COLORS.whiteOverlay,
   },
   statusChipText: {
     fontSize: FONT_SIZES.xs,
@@ -348,7 +349,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.textInverse,
     borderRadius: BORDER_RADIUS.lg,
     padding: SPACING.lg,
-    shadowColor: '#000',
+    shadowColor: COLORS.shadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 8,
@@ -359,7 +360,7 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
     paddingBottom: SPACING.sm,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: COLORS.borderLight,
   },
   receiptBrand: {
     flexDirection: 'row',
@@ -375,18 +376,18 @@ const styles = StyleSheet.create({
   receiptStatus: {
     fontSize: FONT_SIZES.sm,
     fontWeight: '600',
-    color: '#00D68F',
+    color: COLORS.success,
   },
   receiptAmountSection: {
     alignItems: 'center',
     paddingVertical: SPACING.md,
-    backgroundColor: '#f8f9fc',
+    backgroundColor: COLORS.background,
     borderRadius: BORDER_RADIUS.md,
     marginBottom: SPACING.md,
   },
   receiptAmountLabel: {
     fontSize: 10,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     fontWeight: '700',
     marginBottom: 4,
     letterSpacing: 1.2,
@@ -399,7 +400,7 @@ const styles = StyleSheet.create({
   },
   receiptDivider: {
     height: 1,
-    backgroundColor: '#e8e8e8',
+    backgroundColor: COLORS.borderLight,
     marginVertical: SPACING.sm,
   },
   receiptRow: {
@@ -410,7 +411,7 @@ const styles = StyleSheet.create({
   },
   receiptLabel: {
     fontSize: FONT_SIZES.xs,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     fontWeight: '600',
     flex: 1,
   },
@@ -444,11 +445,11 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    backgroundColor: COLORS.whiteOverlayQuarter,
     borderRadius: BORDER_RADIUS.md,
     paddingVertical: SPACING.sm + 2,
     borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.4)',
+    borderColor: COLORS.whiteOverlayStrong,
   },
   actionButtonText: {
     fontSize: FONT_SIZES.sm,
@@ -468,7 +469,7 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.sm + 2,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
+    shadowColor: COLORS.shadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 4,
@@ -477,7 +478,7 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     fontSize: FONT_SIZES.md,
     fontWeight: '700',
-    color: '#00A86B',
+    color: COLORS.successDark,
     letterSpacing: 0.5,
   },
-});
+}));

@@ -1,4 +1,7 @@
+import { Logger } from '../utils/logger';
 import React, { useState, useEffect, useRef } from 'react';
+
+// Email verification screen: validates ownership and login access.
 import {
   View,
   Text,
@@ -13,7 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { sendLoginEmailOTP, verifyLoginEmailOTP, getRemainingAttempts } from '../services/auth';
 import { hasWallet } from '../services/wallet';
 import { supabase } from '../services/supabase';
-import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { AlertManager } from '../utils/alert';
 import { OnboardingProgress, Screen, FormField, InfoBanner, Button } from '../components';
 import {
@@ -43,7 +46,6 @@ type ExistingUserProfile = {
   display_name?: string | null;
   cpay_id?: string | null;
   profile_photo_url?: string | null;
-  phone_number?: string | null;
 };
 
 interface EmailVerificationScreenProps {
@@ -53,6 +55,7 @@ interface EmailVerificationScreenProps {
 export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = ({
   navigation,
 }) => {
+  useTheme();
   const [emailAddress, setEmailAddress] = useState('');
   const [otp, setOtp] = useState('');
   const [verificationId, setVerificationId] = useState('');
@@ -129,12 +132,12 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
 
     const { data, error } = await supabase
       .from('users')
-      .select('wallet_address, display_name, cpay_id, profile_photo_url, phone_number')
+      .select('wallet_address, display_name, cpay_id, profile_photo_url')
       .eq('auth_user_id', userId)
       .maybeSingle();
 
     if (error) {
-      console.error('Existing profile lookup failed:', error);
+      Logger.error('Existing profile lookup failed:', error);
       return null;
     }
 
@@ -237,16 +240,13 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
             displayName: existingProfile.display_name || null,
             cpayId: existingProfile.cpay_id || null,
             profilePhotoUrl: existingProfile.profile_photo_url || null,
-            phoneNumber: existingProfile.phone_number || null,
           });
           setLoading(false);
           verifyingRef.current = false;
           return;
         }
 
-        navigation.replace('CreatePIN', {
-          phoneNumber: '',
-        });
+        navigation.replace('CreatePIN');
       }
     } else {
       AlertManager.alert('Error', result.error || 'Invalid OTP');
@@ -448,7 +448,7 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
 
             {/* Security Notice */}
             <View style={styles.securityNotice}>
-              <Ionicons name="shield-checkmark-outline" size={16} color={COLORS.textSecondary} style={styles.securityIcon} />
+              <Ionicons name="shield-checkmark-outline" size={16} color={COLORS.textMuted} style={styles.securityIcon} />
               <Text style={styles.securityText}>
                 Your email code confirms secure account access
               </Text>
@@ -458,7 +458,7 @@ export const EmailVerificationScreen: React.FC<EmailVerificationScreenProps> = (
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   content: {
     flex: 1,
     padding: SPACING.lg,
@@ -491,7 +491,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: isSmallDevice ? FONT_SIZES.sm : FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
   inputSection: {
@@ -544,7 +544,7 @@ const styles = StyleSheet.create({
   otpDigit: {
     fontSize: 24,
     fontWeight: '700',
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
   },
   otpDigitFilled: {
     color: COLORS.primary,
@@ -566,7 +566,7 @@ const styles = StyleSheet.create({
   },
   otpHint: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     fontWeight: '500',
   },
   timerContainer: {
@@ -575,7 +575,7 @@ const styles = StyleSheet.create({
   },
   timerText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
   },
   resendText: {
     fontSize: FONT_SIZES.md,
@@ -602,8 +602,8 @@ const styles = StyleSheet.create({
   },
   securityText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     flex: 1,
   },
-});
+}));

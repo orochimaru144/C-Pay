@@ -1,4 +1,7 @@
+import { Logger } from '../utils/logger';
 import React, { useState } from 'react';
+
+// Change PIN screen: secure account recovery and wallet verification.
 import {
   View,
   Text,
@@ -9,7 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { PINInput } from '../components/PINInput';
 import { Screen } from '../components';
 import { cachePinForSession, verifyPin, changeWalletPin } from '../services/wallet';
-import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, createThemedStyles, useTheme } from '../constants/theme';
 import { AlertManager } from '../utils/alert';
 
 const FONT_SIZES = TYPOGRAPHY.sizes;
@@ -21,6 +24,7 @@ interface ChangePINScreenProps {
 }
 
 export const ChangePINScreen: React.FC<ChangePINScreenProps> = ({ navigation }) => {
+  useTheme();
   const [step, setStep] = useState<Step>('verify');
   const [currentPin, setCurrentPin] = useState('');
   const [newPin, setNewPin] = useState('');
@@ -33,17 +37,19 @@ export const ChangePINScreen: React.FC<ChangePINScreenProps> = ({ navigation }) 
     
     try {
       // Use wallet.ts verifyPin function to check against SecureStore
-      const isValid = await verifyPin(pin);
+      const result = await verifyPin(pin);
       
-      if (isValid) {
+      if (result.success) {
         setCurrentPin(pin);
         setStep('new');
+      } else if (result.error === 'STORAGE_ERROR') {
+        setError("Couldn't access secure storage — try again.");
+        setTimeout(() => setCurrentPin(''), 300);
       } else {
         setError('Incorrect PIN. Please try again.');
         setTimeout(() => setCurrentPin(''), 300);
       }
     } catch (err) {
-      console.error('PIN verification error:', err);
       setError('Error verifying PIN');
       setTimeout(() => setCurrentPin(''), 300);
     }
@@ -96,7 +102,6 @@ export const ChangePINScreen: React.FC<ChangePINScreenProps> = ({ navigation }) 
         ]
       );
     } catch (err: any) {
-      console.error('Failed to change PIN:', err);
       setError(err.message || 'Failed to update PIN');
       setLoading(false);
       
@@ -202,7 +207,7 @@ export const ChangePINScreen: React.FC<ChangePINScreenProps> = ({ navigation }) 
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   content: {
     flex: 1,
     paddingHorizontal: SPACING.lg,
@@ -254,7 +259,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
   pinSection: {
@@ -275,7 +280,7 @@ const styles = StyleSheet.create({
   },
   infoText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     marginBottom: SPACING.xs,
   },
   cancelButton: {
@@ -284,6 +289,6 @@ const styles = StyleSheet.create({
   },
   cancelButtonText: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
   },
-});
+}));

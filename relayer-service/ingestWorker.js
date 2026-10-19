@@ -1,17 +1,61 @@
 'use strict';
 
+const crypto = require('crypto');
 const StellarSdk = require('@stellar/stellar-sdk');
+const {
+  SupabaseRequestError,
+  executeSupabaseRequest,
+  isPostgresUniqueViolation,
+} = require('./supabaseRest');
 
 const DEFAULT_CURSOR_KEY = 'horizon_payments_cursor';
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_PENDING_TIMEOUT_MS = 300000; // 5 minutes
 const DEFAULT_RECONCILE_INTERVAL_MS = 30000; // 30 seconds
+const DEFAULT_WALLET_CACHE_MAX_SIZE = 5000;
+const DEFAULT_LEADER_LEASE_TTL_MS = 30000; // 30 seconds
+
+/**
+ * Bounded LRU Map for caching wallet addresses to user IDs.
+ * Eviction policy:
+ * - Maximum capacity: maxSize (default: 5000 entries).
+ * - Eviction strategy: Least Recently Used (LRU). When capacity is reached,
+ *   the oldest/least recently accessed item is evicted upon inserting new entries.
+ * - Cache hits promote accessed keys to most recently used.
+ */
+class BoundedLruMap extends Map {
+  constructor(maxSize = DEFAULT_WALLET_CACHE_MAX_SIZE) {
+    super();
+    this.maxSize = maxSize;
+  }
+
+  get(key) {
+    if (!super.has(key)) return undefined;
+    const value = super.get(key);
+    super.delete(key);
+    super.set(key, value);
+    return value;
+  }
+
+  set(key, value) {
+    if (super.has(key)) {
+      super.delete(key);
+    } else if (this.size >= this.maxSize) {
+      const oldestKey = this.keys().next().value;
+      if (oldestKey !== undefined) {
+        super.delete(oldestKey);
+      }
+    }
+    super.set(key, value);
+    return this;
+  }
+}
 
 class IngestWorker {
   constructor(options = {}) {
     this.horizonUrl = options.horizonUrl || process.env.STELLAR_HORIZON_URL || 'https://horizon-testnet.stellar.org';
-    this.assetCode = options.assetCode || process.env.CPINR_ASSET_CODE || 'CPINR';
-    this.assetIssuer = options.assetIssuer || process.env.CPINR_ASSET_ISSUER || '';
+    this.assetCode = options.assetCode || 'USDC';
+    this.assetIssuer = options.assetIssuer || process.env.USDC_ASSET_ISSUER || '';
     this.supabaseUrl = (options.supabaseUrl || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
     this.supabaseServiceRoleKey = options.supabaseServiceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
     this.cursorKey = options.cursorKey || DEFAULT_CURSOR_KEY;
@@ -41,13 +85,38 @@ class IngestWorker {
     this.isPolling = false;
     this.isReconciling = false;
 
-    // Cache of known wallet addresses to user IDs
-    this.walletUserCache = new Map();
+    this.workerId = options.workerId || (crypto.randomUUID ? crypto.randomUUID() : `worker-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    this.leaderKey = options.leaderKey || 'ingest_leader';
+    this.leaderLeaseTtlMs = Number(options.leaderLeaseTtlMs || process.env.INGEST_LEADER_LEASE_TTL_MS || DEFAULT_LEADER_LEASE_TTL_MS);
+    this.isLeader = false;
+    this.leaderHeartbeatTimer = null;
+
+    this.maxWalletCacheSize = Number(options.maxWalletCacheSize || process.env.INGEST_WALLET_CACHE_MAX_SIZE || DEFAULT_WALLET_CACHE_MAX_SIZE);
+    // Bounded LRU cache of known wallet addresses to user IDs
+    this.walletUserCache = new BoundedLruMap(this.maxWalletCacheSize);
     this.lastCacheRefresh = 0;
   }
 
   get isConfigured() {
     return Boolean(this.supabaseUrl && this.supabaseServiceRoleKey);
+  }
+
+  classifyError(err) {
+    if (!err) return null;
+    const msg = String(err.message || err);
+    if (/supabase|rest\/v1|postgrest|relation|column|table|PGRST|duplicate key|violates/i.test(msg)) {
+      return 'DATABASE_ERROR';
+    }
+    if (/horizon|stellar|fetch failed|network|ECONNREFUSED|ENOTFOUND|timeout|ETIMEDOUT/i.test(msg)) {
+      return 'NETWORK_ERROR';
+    }
+    if (/stream|eventSource/i.test(msg)) {
+      return 'STREAM_ERROR';
+    }
+    if (/cursor|ledger|op_index|token/i.test(msg)) {
+      return 'PARSE_ERROR';
+    }
+    return 'INGEST_ERROR';
   }
 
   async start(mode = 'stream') {
@@ -57,6 +126,13 @@ class IngestWorker {
 
     this.status = 'running';
     try {
+      const isLeader = await this.acquireOrRenewLeaderLease();
+      if (!isLeader) {
+        console.log(`[IngestWorker] Standby mode: another instance holds leader lease. Monitoring heartbeat...`);
+        this.startLeaderHeartbeat(mode);
+        return;
+      }
+
       await this.initCursor();
       await this.refreshWalletCache();
 
@@ -67,18 +143,97 @@ class IngestWorker {
       }
 
       this.startReconciliation();
-      console.log(`[IngestWorker] Started in ${mode} mode from cursor ${this.lastCursor || 'now'}`);
+      this.startLeaderHeartbeat(mode);
+      console.log(`[IngestWorker] Started in ${mode} mode as leader from cursor ${this.lastCursor || 'now'}`);
     } catch (err) {
       this.status = 'error';
-      this.lastError = err.message;
+      this.lastError = this.classifyError(err);
       this.errorCount++;
       console.error('[IngestWorker] Failed to start:', err.message);
       throw err;
     }
   }
 
-  async stop() {
-    this.status = 'stopped';
+  async acquireOrRenewLeaderLease() {
+    if (!this.isConfigured) {
+      this.isLeader = true;
+      return true;
+    }
+
+    const now = Date.now();
+    try {
+      const records = await this.supabaseRequest(
+        `ingest_state?key=eq.${encodeURIComponent(this.leaderKey)}&select=key,cursor,last_ledger,updated_at`
+      );
+
+      if (Array.isArray(records) && records.length > 0) {
+        const lease = records.find(r => r.key === this.leaderKey) || records[0];
+        if (lease && lease.key === this.leaderKey) {
+          const lastUpdated = lease.updated_at ? new Date(lease.updated_at).getTime() : 0;
+          const isSelf = lease.cursor === this.workerId;
+          const isExpired = now - lastUpdated > this.leaderLeaseTtlMs;
+
+          if (!isSelf && !isExpired) {
+            this.isLeader = false;
+            return false;
+          }
+        }
+      }
+
+      await this.supabaseRequest('ingest_state', {
+        method: 'POST',
+        headers: {
+          Prefer: 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify({
+          key: this.leaderKey,
+          cursor: this.workerId,
+          last_ledger: null,
+          updated_at: new Date(now).toISOString(),
+        }),
+      });
+
+      this.isLeader = true;
+      return true;
+    } catch (err) {
+      console.warn('[IngestWorker] Leader lease check warning:', err.message);
+      return this.isLeader;
+    }
+  }
+
+  startLeaderHeartbeat(mode = 'stream') {
+    if (this.leaderHeartbeatTimer) return;
+    const intervalMs = Math.max(5000, Math.floor(this.leaderLeaseTtlMs / 3));
+    this.leaderHeartbeatTimer = setInterval(async () => {
+      if (this.status !== 'running') return;
+      const wasLeader = this.isLeader;
+      const acquired = await this.acquireOrRenewLeaderLease();
+
+      if (acquired && !wasLeader) {
+        console.log(`[IngestWorker] Acquired leadership lease. Promoting to active ingest worker.`);
+        try {
+          await this.initCursor();
+          await this.refreshWalletCache();
+          if (mode === 'stream') {
+            this.startStreaming();
+          } else {
+            this.startPolling();
+          }
+          this.startReconciliation();
+        } catch (err) {
+          console.error('[IngestWorker] Error during promotion to leader:', err.message);
+        }
+      } else if (!acquired && wasLeader) {
+        console.warn(`[IngestWorker] Lost leadership lease. Demoting to standby.`);
+        this.stopStreamingOrPolling();
+      }
+    }, intervalMs);
+    if (this.leaderHeartbeatTimer.unref) {
+      this.leaderHeartbeatTimer.unref();
+    }
+  }
+
+  stopStreamingOrPolling() {
     if (this.streamCloseFn) {
       try {
         this.streamCloseFn();
@@ -92,6 +247,23 @@ class IngestWorker {
     if (this.reconcileTimer) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = null;
+    }
+  }
+
+  async stop() {
+    this.status = 'stopped';
+    if (this.leaderHeartbeatTimer) {
+      clearInterval(this.leaderHeartbeatTimer);
+      this.leaderHeartbeatTimer = null;
+    }
+    this.stopStreamingOrPolling();
+    if (this.isLeader && this.isConfigured) {
+      try {
+        await this.supabaseRequest(`ingest_state?key=eq.${encodeURIComponent(this.leaderKey)}`, {
+          method: 'DELETE',
+        });
+      } catch (_) {}
+      this.isLeader = false;
     }
     console.log('[IngestWorker] Stopped');
   }
@@ -155,7 +327,7 @@ class IngestWorker {
       if (now - this.lastCacheRefresh < 60000 && this.walletUserCache.size > 0) {
         return;
       }
-      const users = await this.supabaseRequest('users?select=id,wallet_address');
+      const users = await this.supabaseRequest(`users?select=id,wallet_address&limit=${this.maxWalletCacheSize}`);
       if (Array.isArray(users)) {
         this.walletUserCache.clear();
         for (const u of users) {
@@ -163,11 +335,35 @@ class IngestWorker {
             this.walletUserCache.set(u.wallet_address, u.id);
           }
         }
-        this.lastCacheRefresh = now;
       }
+
+      this.lastCacheRefresh = now;
     } catch (err) {
+      this.errorCount++;
+      this.lastError = this.classifyError(err);
       console.warn('[IngestWorker] Failed to refresh wallet cache:', err.message);
     }
+  }
+
+  async getUserIdForWallet(walletAddress) {
+    if (!walletAddress) return null;
+    const cached = this.walletUserCache.get(walletAddress);
+    if (cached) return cached;
+    if (!this.isConfigured) return null;
+
+    try {
+      const records = await this.supabaseRequest(
+        `users?wallet_address=eq.${encodeURIComponent(walletAddress)}&select=id&limit=1`
+      );
+      if (Array.isArray(records) && records.length > 0 && records[0].id) {
+        const userId = records[0].id;
+        this.walletUserCache.set(walletAddress, userId);
+        return userId;
+      }
+    } catch (err) {
+      console.warn('[IngestWorker] Failed to query user for wallet:', err.message);
+    }
+    return null;
   }
 
   startStreaming() {
@@ -184,13 +380,14 @@ class IngestWorker {
           await this.processOperation(operation);
         } catch (err) {
           this.errorCount++;
-          this.lastError = err.message;
+          this.lastError = this.classifyError(err);
           console.error('[IngestWorker] Error processing streamed operation:', err.message);
         }
       },
       onerror: (err) => {
         console.warn('[IngestWorker] Stream error, falling back to polling:', err.message || err);
         this.errorCount++;
+        this.lastError = this.classifyError(err);
         if (this.streamCloseFn) {
           try {
             this.streamCloseFn();
@@ -213,7 +410,7 @@ class IngestWorker {
         await this.pollOnce();
       } catch (err) {
         this.errorCount++;
-        this.lastError = err.message;
+        this.lastError = this.classifyError(err);
         console.error('[IngestWorker] Poll error:', err.message);
       } finally {
         this.isPolling = false;
@@ -243,36 +440,63 @@ class IngestWorker {
       if (latestLedgers.records && latestLedgers.records.length > 0) {
         this.latestNetworkLedger = latestLedgers.records[0].sequence;
       }
-    } catch (_) {}
+    } catch (err) {
+      this.errorCount++;
+      this.lastError = this.classifyError(err);
+      console.warn('[IngestWorker] Failed to update latest ledger:', err.message);
+    }
   }
 
   async processOperation(operation) {
     if (!operation || !operation.id) return;
 
-    // Filter payment-related operations
-    const opType = operation.type;
-    const isPaymentOp = [
-      'payment',
-      'path_payment_strict_receive',
-      'path_payment_strict_send',
-      'create_account',
-    ].includes(opType);
-
-    if (!isPaymentOp) {
-      await this.saveStoredCursor(operation.paging_token || operation.id);
+    // Filter to payment operations only (drop create_account and path payments)
+    if (operation.type !== 'payment') {
+      const ledgerSeq = this.extractLedgerSequence(operation);
+      if (ledgerSeq) this.lastIngestedLedger = ledgerSeq;
+      await this.saveStoredCursor(operation.paging_token || operation.id, ledgerSeq);
       return;
     }
 
     const details = this.extractOperationDetails(operation);
     if (!details) {
-      await this.saveStoredCursor(operation.paging_token || operation.id);
+      const ledgerSeq = this.extractLedgerSequence(operation);
+      if (ledgerSeq) this.lastIngestedLedger = ledgerSeq;
+      await this.saveStoredCursor(operation.paging_token || operation.id, ledgerSeq);
       return;
     }
 
-    // Match users
-    const fromUserId = this.walletUserCache.get(details.from_address) || null;
-    const toUserId = this.walletUserCache.get(details.to_address) || null;
+    // Filter to configured asset (do not ingest unrelated assets)
+    if (details.asset_code !== this.assetCode) {
+      if (details.ledger_sequence) this.lastIngestedLedger = details.ledger_sequence;
+      await this.saveStoredCursor(operation.paging_token || operation.id, details.ledger_sequence);
+      return;
+    }
+    if (this.assetIssuer && details.asset_issuer && details.asset_issuer !== this.assetIssuer) {
+      if (details.ledger_sequence) this.lastIngestedLedger = details.ledger_sequence;
+      await this.saveStoredCursor(operation.paging_token || operation.id, details.ledger_sequence);
+      return;
+    }
+
+    // Match users - restrict ingestion to known accounts (bounded cache with on-demand DB resolution)
+    let fromUserId = this.walletUserCache.get(details.from_address) || null;
+    if (!fromUserId && details.from_address) {
+      fromUserId = await this.getUserIdForWallet(details.from_address);
+    }
+
+    let toUserId = this.walletUserCache.get(details.to_address) || null;
+    if (!toUserId && details.to_address) {
+      toUserId = await this.getUserIdForWallet(details.to_address);
+    }
+
     const matchedUserId = fromUserId || toUserId;
+
+    if (!matchedUserId) {
+      // Neither party is known to the system: skip storing this transaction
+      if (details.ledger_sequence) this.lastIngestedLedger = details.ledger_sequence;
+      await this.saveStoredCursor(operation.paging_token || operation.id, details.ledger_sequence);
+      return;
+    }
 
     // Ingest into Supabase
     if (this.isConfigured) {
@@ -305,31 +529,17 @@ class IngestWorker {
     const txHash = op.transaction_hash;
     if (!txHash) return null;
 
-    let fromAddress = '';
-    let toAddress = '';
-    let amount = '0';
-    let assetCode = 'XLM';
-    let assetIssuer = null;
+    if (op.type !== 'payment') {
+      return null;
+    }
 
-    if (op.type === 'payment') {
-      fromAddress = op.from || op.source_account || '';
-      toAddress = op.to || '';
-      amount = op.amount || '0';
-      assetCode = op.asset_type === 'native' ? 'XLM' : (op.asset_code || 'CPINR');
-      assetIssuer = op.asset_issuer || null;
-    } else if (op.type === 'create_account') {
-      fromAddress = op.funder || op.source_account || '';
-      toAddress = op.account || '';
-      amount = op.starting_balance || '0';
-      assetCode = 'XLM';
-      assetIssuer = null;
-    } else if (op.type.startsWith('path_payment')) {
-      fromAddress = op.from || op.source_account || '';
-      toAddress = op.to || '';
-      amount = op.amount || op.dest_amount || '0';
-      assetCode = op.asset_type === 'native' ? 'XLM' : (op.asset_code || 'CPINR');
-      assetIssuer = op.asset_issuer || null;
-    } else {
+    const fromAddress = op.from || op.source_account || '';
+    const toAddress = op.to || '';
+    const amount = op.amount || '0';
+    const assetCode = op.asset_type === 'native' ? 'XLM' : (op.asset_code || null);
+    const assetIssuer = op.asset_type === 'native' ? null : (op.asset_issuer || null);
+
+    if (!assetCode) {
       return null;
     }
 
@@ -351,11 +561,21 @@ class IngestWorker {
   }
 
   extractOpIndex(op) {
-    if (op.paging_token) {
-      // Paging tokens in Horizon are formed as (ledgerSeq * 4096 + txIndex) * 4096 + opIndex
-      const parts = String(op.paging_token).split('-');
-      if (parts.length > 1) {
-        return Number(parts[parts.length - 1]) || 0;
+    const raw = op.paging_token || op.id;
+    if (raw) {
+      const str = String(raw);
+      if (str.includes('-')) {
+        const parts = str.split('-');
+        const parsed = Number(parts[parts.length - 1]);
+        if (!Number.isNaN(parsed)) return parsed;
+      }
+      try {
+        const bigToken = BigInt(str);
+        return Number(bigToken & 4095n);
+      } catch (err) {
+        this.errorCount++;
+        this.lastError = this.classifyError(err);
+        console.warn('[IngestWorker] Failed to extract op index from token:', err.message);
       }
     }
     return 0;
@@ -365,19 +585,29 @@ class IngestWorker {
     if (op.transaction_attr && op.transaction_attr.ledger) {
       return op.transaction_attr.ledger;
     }
-    if (op.paging_token) {
+    const raw = op.paging_token || op.id;
+    if (raw) {
       try {
-        const bigToken = BigInt(op.paging_token);
-        const ledger = Number(bigToken >> 32n);
+        const str = String(raw).split('-')[0];
+        const bigToken = BigInt(str);
+        const ledger = Number(bigToken >> 24n);
         if (ledger > 0) return ledger;
-      } catch (_) {}
+        if (str.length <= 10) {
+          const direct = Number(str);
+          if (direct > 0 && direct < 16777216) return direct;
+        }
+      } catch (err) {
+        this.errorCount++;
+        this.lastError = this.classifyError(err);
+        console.warn('[IngestWorker] Failed to extract ledger sequence from token:', err.message);
+      }
     }
     return null;
   }
 
   async upsertTransaction(tx) {
     try {
-      await this.supabaseRequest('transactions', {
+      await this.supabaseRequest('transactions?on_conflict=tx_hash,op_index', {
         method: 'POST',
         headers: {
           Prefer: 'resolution=merge-duplicates',
@@ -385,6 +615,8 @@ class IngestWorker {
         body: JSON.stringify(tx),
       });
     } catch (err) {
+      this.errorCount++;
+      this.lastError = this.classifyError(err);
       console.warn('[IngestWorker] Upsert transaction failed:', err.message);
       throw err;
     }
@@ -398,6 +630,8 @@ class IngestWorker {
       try {
         await this.reconcilePendingTransactions();
       } catch (err) {
+        this.errorCount++;
+        this.lastError = this.classifyError(err);
         console.warn('[IngestWorker] Reconciliation error:', err.message);
       } finally {
         this.isReconciling = false;
@@ -419,9 +653,22 @@ class IngestWorker {
 
     for (const pending of pendingList) {
       if (!pending.tx_hash) continue;
+      let txRecord = null;
+      let notFoundOnChain = false;
       try {
         // Check if transaction exists on Horizon
-        const txRecord = await this.server.transactions().transaction(pending.tx_hash).call();
+        txRecord = await this.server.transactions().transaction(pending.tx_hash).call();
+      } catch (err) {
+        const status = err?.status || err?.response?.status;
+        if (!(err instanceof SupabaseRequestError) && status === 404) {
+          notFoundOnChain = true;
+        } else {
+          console.warn(`[IngestWorker] Error checking transaction ${pending.tx_hash} on Horizon:`, err.message);
+          continue;
+        }
+      }
+
+      try {
         if (txRecord && txRecord.successful) {
           // Transaction succeeded on chain: reconcile status
           await this.supabaseRequest(`transactions?id=eq.${pending.id}`, {
@@ -434,9 +681,7 @@ class IngestWorker {
             }),
           });
           this.reconciledCount++;
-        }
-      } catch (err) {
-        if (err.response && err.response.status === 404) {
+        } else if (notFoundOnChain) {
           // Timed out and not found on chain: mark failed
           await this.supabaseRequest(`transactions?id=eq.${pending.id}`, {
             method: 'PATCH',
@@ -449,6 +694,8 @@ class IngestWorker {
           });
           this.reconciledCount++;
         }
+      } catch (err) {
+        console.warn(`[IngestWorker] Reconciliation update failed for ${pending.id}:`, err.message);
       }
     }
   }
@@ -474,6 +721,8 @@ class IngestWorker {
     return {
       status: this.status,
       healthy: isHealthy,
+      isLeader: this.isLeader,
+      workerId: this.workerId,
       lag: lag.ledgerLag,
       ...lag,
       metrics: {
@@ -486,34 +735,24 @@ class IngestWorker {
   }
 
   async supabaseRequest(path, options = {}) {
-    const doFetch = this.customFetch || fetch;
-    if (typeof doFetch !== 'function') {
-      throw new Error('global fetch is unavailable');
-    }
-
-    const response = await doFetch(`${this.supabaseUrl}/rest/v1/${path}`, {
-      ...options,
-      headers: {
-        apikey: this.supabaseServiceRoleKey,
-        Authorization: `Bearer ${this.supabaseServiceRoleKey}`,
-        'Content-Type': 'application/json',
-        ...(options.headers || {}),
-      },
+    return executeSupabaseRequest({
+      baseUrl: this.supabaseUrl,
+      serviceRoleKey: this.supabaseServiceRoleKey,
+      path,
+      options,
+      fetchFn: this.customFetch || (typeof fetch === 'function' ? fetch : undefined),
     });
-
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(text || `Supabase request failed with status ${response.status}`);
-    }
-
-    return text ? JSON.parse(text) : null;
   }
 }
 
 module.exports = {
   IngestWorker,
+  BoundedLruMap,
+  SupabaseRequestError,
+  isPostgresUniqueViolation,
   DEFAULT_CURSOR_KEY,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_PENDING_TIMEOUT_MS,
+  DEFAULT_WALLET_CACHE_MAX_SIZE,
 };
 

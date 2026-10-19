@@ -1,6 +1,8 @@
 import React from 'react';
+
+// Info screen: educational and support details for wallet users.
 import { View, Text, StyleSheet, Linking } from 'react-native';
-import { COLORS, SPACING, FONT_SIZES } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, createThemedStyles, useTheme } from '../constants/theme';
 import { Screen, Header, Button, InfoBanner } from '../components';
 import { AlertManager } from '../utils/alert';
 
@@ -23,7 +25,7 @@ const CONTENT: Record<InfoDoc, { title: string; blocks: Block[] }> = {
     title: 'About C-Pay',
     blocks: [
       { type: 'paragraph', text: `C-Pay v${APP_VERSION}` },
-      { type: 'paragraph', text: 'C-Pay is a closed-pilot payment app that uses test credits on the Stellar testnet. It lets you send and receive pilot credits and accept merchant payments via QR.' },
+      { type: 'paragraph', text: 'C-Pay is a closed-pilot payment app that uses test credits on the Stellar testnet. It lets you send and receive pilot credits.' },
       { type: 'paragraph', text: 'Pilot credits are for testing only. They are not real money, hold no cash value, and cannot be redeemed.' },
       { type: 'paragraph', text: '© 2026 C-Pay. All rights reserved.' },
     ],
@@ -32,7 +34,7 @@ const CONTENT: Record<InfoDoc, { title: string; blocks: Block[] }> = {
     title: 'Privacy Policy',
     blocks: [
       { type: 'heading', text: 'What we store' },
-      { type: 'paragraph', text: 'C-Pay stores your display name, C-Pay ID, optional profile photo, verified email, and (for merchants) your business details. Your wallet is encrypted on your device; an optional encrypted backup can be stored to help you recover it.' },
+      { type: 'paragraph', text: 'C-Pay stores your display name, C-Pay ID, optional profile photo, and verified email. Your wallet is encrypted on your device; an optional encrypted backup can be stored to help you recover it.' },
       { type: 'heading', text: 'Your keys' },
       { type: 'paragraph', text: 'Your PIN and private keys never leave your device unencrypted. C-Pay cannot read or recover your PIN or secret key. Cloud backups are encrypted with a recovery password only you know.' },
       { type: 'heading', text: 'Payments' },
@@ -62,12 +64,13 @@ const CONTENT: Record<InfoDoc, { title: string; blocks: Block[] }> = {
       { type: 'heading', text: 'Recovering your wallet' },
       { type: 'paragraph', text: 'Set up cloud backup in the Security Center so you can restore your wallet on a new device with your recovery password. You can also export your secret key as a backup.' },
       { type: 'heading', text: 'Common issues' },
-      { type: 'paragraph', text: 'If a payment fails, your credits are not deducted — check your connection and try again. Merchant QR payments need contract sync to be complete (retry it from the merchant dashboard).' },
+      { type: 'paragraph', text: 'If a payment fails, your credits are not deducted — check your connection and try again.' },
     ],
   },
 };
 
 export const InfoScreen: React.FC<InfoScreenProps> = ({ navigation, route }) => {
+  useTheme();
   const doc = route.params?.doc || 'about';
   const { title, blocks } = CONTENT[doc];
 
@@ -116,7 +119,7 @@ export const InfoScreen: React.FC<InfoScreenProps> = ({ navigation, route }) => 
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   heading: {
     fontSize: FONT_SIZES.lg,
     fontWeight: '700',
@@ -126,7 +129,7 @@ const styles = StyleSheet.create({
   },
   paragraph: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     lineHeight: 22,
     marginBottom: SPACING.sm,
   },
@@ -136,4 +139,4 @@ const styles = StyleSheet.create({
   note: {
     marginTop: SPACING.xl,
   },
-});
+}));

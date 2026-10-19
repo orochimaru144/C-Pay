@@ -5,21 +5,12 @@ export interface Transaction {
   to_address: string;
   amount: string;
   status: 'pending' | 'success' | 'failed';
-  merchant_name?: string;
-  created_at?: string;
-}
-
-export interface Merchant {
-  id?: string;
-  name: string;
-  wallet_address: string;
-  qr_code_url?: string;
   created_at?: string;
 }
 
 export interface QRPaymentData {
   type: 'cryptopay';
-  merchant: string;
+  recipient: string;
   amount?: string;
   name?: string;
 }

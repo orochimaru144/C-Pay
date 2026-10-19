@@ -2,6 +2,7 @@ import Constants from 'expo-constants';
 import * as StellarSdk from '@stellar/stellar-base';
 import { StellarWallet } from './wallet';
 import { supabase } from './supabase';
+import { generateIdempotencyKey } from '../hooks/usePaymentIntent';
 
 const getEnvVar = (key: string, fallback: string = ''): string => {
   const processEnv = process.env[key];
@@ -51,8 +52,15 @@ const NETWORK_PASSPHRASE = getEnvVar(
   'EXPO_PUBLIC_STELLAR_NETWORK_PASSPHRASE',
   StellarSdk.Networks.TESTNET
 );
-const CPINR_ASSET_CODE = getEnvVar('EXPO_PUBLIC_CPINR_ASSET_CODE', 'CPINR');
-const CPINR_ASSET_ISSUER = getEnvVar('EXPO_PUBLIC_CPINR_ASSET_ISSUER', '');
+const USDC_ISSUERS = {
+  testnet: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  public: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+} as const;
+const USDC_ASSET_CODE = 'USDC';
+const USDC_ASSET_ISSUER = getEnvVar(
+  'EXPO_PUBLIC_USDC_ASSET_ISSUER',
+  STELLAR_NETWORK === 'public' ? USDC_ISSUERS.public : USDC_ISSUERS.testnet,
+);
 const RELAYER_URL = resolveRelayerUrl();
 const BASE_FEE = getEnvVar('EXPO_PUBLIC_STELLAR_BASE_FEE', StellarSdk.BASE_FEE);
 const RELAYER_TIMEOUT_MS = 60000;
@@ -63,8 +71,8 @@ const CONTRACT_INTENT_TIMEOUT_MS = 60000;
 export type TransactionStatus = 'pending' | 'success' | 'failed' | 'unknown';
 
 export type PaymentOptions = {
-  merchantId?: string | null;
   note?: string;
+  idempotencyKey?: string;
 };
 
 type HorizonBalance = {
@@ -122,8 +130,8 @@ export function getNetworkConfig() {
     network: STELLAR_NETWORK,
     horizonUrl: HORIZON_URL,
     networkPassphrase: NETWORK_PASSPHRASE,
-    assetCode: CPINR_ASSET_CODE,
-    assetIssuer: CPINR_ASSET_ISSUER,
+    assetCode: USDC_ASSET_CODE,
+    assetIssuer: USDC_ASSET_ISSUER,
     relayerUrl: RELAYER_URL,
   };
 }
@@ -132,12 +140,13 @@ export function isValidAccountId(accountId: string): boolean {
   return StellarSdk.StrKey.isValidEd25519PublicKey(accountId || '');
 }
 
-export function getCpinrAsset(): StellarSdk.Asset {
-  if (!CPINR_ASSET_ISSUER) {
-    throw new Error('CPINR asset issuer is not configured');
+export function getUsdcAsset(): StellarSdk.Asset {
+  const expectedIssuer = STELLAR_NETWORK === 'public' ? USDC_ISSUERS.public : USDC_ISSUERS.testnet;
+  if (USDC_ASSET_ISSUER !== expectedIssuer) {
+    throw new Error(`USDC issuer does not match Circle's ${STELLAR_NETWORK} issuer`);
   }
 
-  return new StellarSdk.Asset(CPINR_ASSET_CODE, CPINR_ASSET_ISSUER);
+  return new StellarSdk.Asset(USDC_ASSET_CODE, USDC_ASSET_ISSUER);
 }
 
 export async function getBalance(accountId: string): Promise<string> {
@@ -150,16 +159,16 @@ export async function getBalance(accountId: string): Promise<string> {
       balance: string;
     }>(`/account/${accountId}/balance`);
 
-    return Number(relayerBalance.balance || '0').toFixed(2);
+    return Number(relayerBalance.balance || '0').toFixed(7);
   } catch {
     try {
       const account = await loadHorizonAccount(accountId);
       const balance = account.balances.find(item =>
-        item.asset_code === CPINR_ASSET_CODE &&
-        item.asset_issuer === CPINR_ASSET_ISSUER
+        item.asset_code === USDC_ASSET_CODE &&
+        item.asset_issuer === USDC_ASSET_ISSUER
       );
 
-      return Number(balance?.balance || '0').toFixed(2);
+      return Number(balance?.balance || '0').toFixed(7);
     } catch {
       return '0.00';
     }
@@ -235,14 +244,19 @@ export function formatTimeRemaining(seconds: number): string {
   return `${remainingSeconds}s`;
 }
 
-export async function requestAddMoney(wallet: StellarWallet): Promise<string> {
+export async function requestAddMoney(
+  wallet: StellarWallet,
+  idempotencyKey?: string
+): Promise<string> {
   await ensureAccountReady(wallet);
+
+  const key = idempotencyKey || generateIdempotencyKey();
 
   const result = await relayerRequest<{ hash: string }>('/add-money', {
     method: 'POST',
     body: JSON.stringify({
       accountId: wallet.publicKey,
-      idempotencyKey: `add-money-${wallet.publicKey}-${Date.now()}`,
+      idempotencyKey: key,
     }),
   });
 
@@ -270,14 +284,6 @@ export async function sendPayment(
 
   const normalizedAmount = normalizeAmount(amount);
   await ensureAccountReady(wallet);
-  const intentId = options.merchantId
-    ? await createPaymentIntent(wallet, {
-      merchantId: options.merchantId,
-      merchantAddress: destination,
-      amount: normalizedAmount,
-      note: options.note,
-    })
-    : '';
 
   const horizonAccount = await loadHorizonAccount(wallet.publicKey);
   const sourceAccount = new StellarSdk.Account(wallet.publicKey, horizonAccount.sequence);
@@ -287,7 +293,7 @@ export async function sendPayment(
   })
     .addOperation(StellarSdk.Operation.payment({
       destination,
-      asset: getCpinrAsset(),
+      asset: getUsdcAsset(),
       amount: normalizedAmount,
     }))
     .setTimeout(60)
@@ -295,71 +301,17 @@ export async function sendPayment(
 
   transaction.sign(wallet.keypair);
 
+  const idempotencyKey = options.idempotencyKey || generateIdempotencyKey();
+
   const result = await relayerRequest<{ hash: string }>('/payments/submit', {
     method: 'POST',
     body: JSON.stringify({
       signedXdr: transaction.toXDR(),
-      idempotencyKey: `payment-${wallet.publicKey}-${destination}-${normalizedAmount}-${Date.now()}`,
-      ...(intentId ? { intentId } : {}),
+      idempotencyKey,
     }),
   }, CONTRACT_INTENT_TIMEOUT_MS);
 
   return result.hash;
-}
-
-export async function registerContractMerchant(
-  merchantId: string,
-  walletAddress: string
-): Promise<{
-  status: string;
-  contractStatus?: string;
-  contractMerchantKey?: string;
-  contractTxHash?: string;
-}> {
-  return relayerRequest('/contract/merchants/register', {
-    method: 'POST',
-    body: JSON.stringify({
-      merchantId,
-      walletAddress,
-    }),
-  }, CONTRACT_INTENT_TIMEOUT_MS);
-}
-
-async function createPaymentIntent(
-  wallet: StellarWallet,
-  params: {
-    merchantId: string;
-    merchantAddress: string;
-    amount: string;
-    note?: string;
-  }
-): Promise<string> {
-  const prepared = await relayerRequest<{
-    intentId: string;
-    xdr: string;
-    networkPassphrase: string;
-  }>('/payments/intents/prepare', {
-    method: 'POST',
-    body: JSON.stringify({
-      payer: wallet.publicKey,
-      merchantId: params.merchantId,
-      merchantAddress: params.merchantAddress,
-      amount: params.amount,
-      note: params.note || '',
-    }),
-  }, CONTRACT_INTENT_TIMEOUT_MS);
-
-  const signedXdr = wallet.signXdr(prepared.xdr, prepared.networkPassphrase || NETWORK_PASSPHRASE);
-
-  await relayerRequest('/payments/intents/submit', {
-    method: 'POST',
-    body: JSON.stringify({
-      intentId: prepared.intentId,
-      signedXdr,
-    }),
-  }, CONTRACT_INTENT_TIMEOUT_MS);
-
-  return prepared.intentId;
 }
 
 export async function getTransactionReceipt(txHash: string) {
@@ -485,7 +437,7 @@ async function horizonRequest<T = any>(path: string): Promise<T> {
   return body as T;
 }
 
-async function relayerRequest<T = any>(
+export async function relayerRequest<T = any>(
   path: string,
   options: RequestInit = {},
   timeoutMs: number = RELAYER_TIMEOUT_MS

@@ -40,10 +40,28 @@ jobs:
         run: npx expo install --check
 
       - name: Type check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Run unit tests
         run: npm test -- --runInBand --ci
+
+  database:
+    name: Database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start local Supabase and apply migrations
+        run: supabase start
+
+      - name: Run database tests
+        run: supabase test db
 
   relayer:
     name: Relayer
@@ -67,9 +85,6 @@ jobs:
 
       - name: Check server syntax
         run: node --check server.js
-
-      - name: Check test script syntax
-        run: node --check test-relayer.js
 
       - name: Run tests
         run: npm test -- --runInBand

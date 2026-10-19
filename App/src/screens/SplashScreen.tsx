@@ -1,4 +1,7 @@
+import { Logger } from '../utils/logger';
 import React, { useEffect } from 'react';
+
+// Splash screen: startup state for wallet initialization and redirect.
 import {
   View,
   Text,
@@ -8,8 +11,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { hasWallet } from '../services/wallet';
-import { COLORS, SPACING, TYPOGRAPHY } from '../constants/theme';
+import { hasWallet, recoverPendingPinChange } from '../services/wallet';
+import { COLORS, SPACING, TYPOGRAPHY, createThemedStyles, useTheme } from '../constants/theme';
 import { PILOT_NOTICE_TITLE } from '../utils/pilot';
 
 const FONT_SIZES = TYPOGRAPHY.sizes;
@@ -21,6 +24,7 @@ interface SplashScreenProps {
 }
 
 export const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
+  useTheme();
   useEffect(() => {
     checkWalletAndNavigate();
   }, [navigation]);
@@ -30,16 +34,17 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
       // Keep the splash visible just long enough to avoid a hard flash.
       await new Promise(resolve => setTimeout(resolve, 500));
       
+      // On startup, detect and recover from any half-finished PIN change
+      await recoverPendingPinChange();
+
       // Check if user has already created wallet
       const walletExists = await hasWallet();
-      console.log('Wallet exists:', walletExists);
+      Logger.info('Wallet exists:', walletExists);
       
       if (walletExists) {
-        const phoneVerified = await AsyncStorage.getItem('phone_number');
         const emailVerified = await AsyncStorage.getItem('email_verified');
-        const verificationComplete = Boolean(phoneVerified || emailVerified === 'true');
 
-        if (!verificationComplete) {
+        if (emailVerified !== 'true') {
           // Existing wallet but no active verification - show verification
           navigation.replace('EmailVerification');
         } else {
@@ -51,7 +56,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
         navigation.replace('Onboarding');
       }
     } catch (error) {
-      console.error('Error checking wallet:', error);
+      Logger.error('Error checking wallet:', error);
       // On error, assume new user
       navigation.replace('Onboarding');
     }
@@ -69,14 +74,14 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
         <Text style={styles.subtitle}>{PILOT_NOTICE_TITLE} on Stellar testnet</Text>
       </View>
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="small" color={COLORS.card} />
+        <ActivityIndicator size="small" color={COLORS.textInverse} />
         <Text style={styles.loadingText}>Loading...</Text>
       </View>
     </View>
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     flex: 1,
     backgroundColor: COLORS.primary,
@@ -95,12 +100,12 @@ const styles = StyleSheet.create({
   title: {
     fontSize: FONT_SIZES.xxl,
     fontWeight: 'bold',
-    color: COLORS.card,
+    color: COLORS.textInverse,
     marginBottom: SPACING.sm,
   },
   subtitle: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.card + 'CC',
+    color: COLORS.textInverse + 'CC',
   },
   loadingContainer: {
     position: 'absolute',
@@ -109,7 +114,7 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.card + 'AA',
+    color: COLORS.textInverse + 'AA',
     marginTop: SPACING.sm,
   },
-});
+}));

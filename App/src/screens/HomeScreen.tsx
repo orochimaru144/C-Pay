@@ -1,4 +1,7 @@
+import { Logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
+
+// Home screen: primary account overview for balances and payments.
 import {
   View,
   Text,
@@ -11,14 +14,21 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { requestAddMoney, getBalance, getTimeUntilNextAddMoney, formatTimeRemaining } from '../services/blockchain';
+import { requestAddMoney, getBalance, getTimeUntilNextAddMoney, formatTimeRemaining, isValidAccountId } from '../services/blockchain';
 import { startTransactionPolling, stopTransactionPolling } from '../services/transactionMonitor';
 import { getAuthenticatedWallet } from '../utils/biometric';
 import { getTransactions, saveTransaction, Transaction, storageEvents } from '../services/storage';
 import { supabase } from '../services/supabase';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
-import { MONEY_BALANCE_LABEL, MONEY_SYMBOL, formatMoneyAmount } from '../utils/currency';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
+import {
+  MONEY_BALANCE_LABEL,
+  MONEY_SYMBOL,
+  MONEY_UNIT_LABEL,
+  formatMoneyAmount,
+  formatMoneyBalance,
+} from '../utils/currency';
 import { PILOT_NOTICE_TEXT, PILOT_NOTICE_TITLE } from '../utils/pilot';
+import { usePaymentIntent } from '../hooks/usePaymentIntent';
 import {
   LoadingSpinner,
   TransactionItem,
@@ -100,7 +110,7 @@ const getAddMoneyErrorMessage = (error: unknown): string => {
     return 'Please wait 24 hours between pilot credit claims.';
   }
 
-  if (code === 'DISTRIBUTION_LOW_ASSET' || (lowerMessage.includes('insufficient') && lowerMessage.includes('cpinr'))) {
+  if (code === 'DISTRIBUTION_LOW_ASSET' || (lowerMessage.includes('insufficient') && lowerMessage.includes('usdc'))) {
     return 'Pilot credit claims are temporarily unavailable because the relayer distribution account has no test asset balance.';
   }
 
@@ -153,6 +163,7 @@ const getAddMoneyTitle = (phase: AddMoneyPhase): string => {
 };
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
+  useTheme();
   const [balance, setBalance] = useState<string>('0');
   const [walletAddress, setWalletAddress] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -164,6 +175,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const [addMoneyMessage, setAddMoneyMessage] = useState('');
   const [addMoneyTxHash, setAddMoneyTxHash] = useState('');
   const [addMoneyRetryAfterSeconds, setAddMoneyRetryAfterSeconds] = useState(0);
+  const {
+    idempotencyKey: addMoneyIntentKey,
+    getOrCreateIntent: getOrCreateAddMoneyIntent,
+    clearIntent: clearAddMoneyIntent,
+  } = usePaymentIntent();
   const fadeAnim = useState(new Animated.Value(0))[0];
   const slideAnim = useState(new Animated.Value(50))[0];
   const isAddMoneyBusy = ['checking', 'authenticating', 'processing'].includes(addMoneyPhase);
@@ -206,7 +222,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     
     // Listen for new transactions (real-time updates within same app)
     const transactionListener = (transaction: Transaction) => {
-      console.log('📡 Received new transaction event, refreshing list...');
       loadTransactions();
       // Also refresh balance
       if (walletAddress) {
@@ -215,16 +230,27 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     };
     
     storageEvents.on('transactionSaved', transactionListener);
-    console.log('🎯 Subscribed to transactionSaved events');
     
     // Setup Supabase real-time subscription for incoming transactions (for receivers)
     let supabaseSubscription: any = null;
     
     const setupRealtimeSubscription = async () => {
       if (!walletAddress) return;
+
+      // Guard against filter-injection: validate the wallet address before
+      // interpolating it into the PostgREST realtime filter string.
+      // supabase-js realtime only accepts filter as a raw string, so strict
+      // call-boundary validation is the correct mitigation here.
+      // isValidAccountId uses the Stellar SDK's Ed25519 public-key checker,
+      // which rejects anything that isn't a well-formed G-account address.
+      if (!isValidAccountId(walletAddress)) {
+        return;
+      }
       
-      console.log('🔔 Setting up Supabase real-time subscription for:', walletAddress);
+      Logger.info('🔔 Setting up Supabase real-time subscription');
       
+      // walletAddress is a validated Stellar Ed25519 public key (56-char base32
+      // starting with "G"), so interpolation here cannot carry filter syntax.
       supabaseSubscription = supabase
         .channel('transactions')
         .on(
@@ -236,7 +262,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
             filter: `to_address=eq.${walletAddress}`,
           },
           (payload) => {
-            console.log('💰 New incoming transaction detected!', payload);
             loadTransactions();
             loadBalance(walletAddress);
           }
@@ -252,11 +277,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     return () => {
       stopTransactionPolling();
       storageEvents.off('transactionSaved', transactionListener);
-      console.log('🚫 Unsubscribed from transactionSaved events');
       
       if (supabaseSubscription) {
         supabase.removeChannel(supabaseSubscription);
-        console.log('🚫 Unsubscribed from Supabase real-time');
+        Logger.info('🚫 Unsubscribed from Supabase real-time');
       }
     };
   }, [walletAddress]);
@@ -264,7 +288,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   // Refresh transactions when screen comes into focus
   useFocusEffect(
     React.useCallback(() => {
-      console.log('🔄 HomeScreen focused - refreshing transactions');
       loadTransactions();
       if (walletAddress) {
         loadBalance(walletAddress);
@@ -280,7 +303,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         await loadBalance(address);
       }
     } catch (error) {
-      console.error('Error loading wallet:', error);
+      Logger.error('Error loading wallet:', error);
     } finally {
       setLoading(false);
     }
@@ -289,9 +312,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const loadBalance = async (address: string) => {
     try {
       const formatted = await getBalance(address);
-      setBalance(parseFloat(formatted).toFixed(2));
+      setBalance(formatted);
     } catch (error) {
-      console.error('Error loading balance:', error);
+      Logger.error('Error loading balance:', error);
       setBalance('0.00');
     }
   };
@@ -302,7 +325,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       // Get last 5 transactions
       setTransactions(txs.slice(0, 10));
     } catch (error) {
-      console.error('Error loading transactions:', error);
     }
   };
 
@@ -324,7 +346,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
     setAddMoneyTxHash('');
     setAddMoneyRetryAfterSeconds(0);
-    setAddMoneyMessage('Checking when your next pilot credit claim is available...');
+    setAddMoneyMessage('Checking when your next testnet USDC claim is available...');
     setAddMoneyPhase('checking');
 
     const retryAfterSeconds = await getTimeUntilNextAddMoney(walletAddress);
@@ -333,10 +355,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       setAddMoneyRetryAfterSeconds(retryAfterSeconds);
       setAddMoneyMessage('');
       setAddMoneyPhase('cooldown');
+      clearAddMoneyIntent();
       return;
     }
 
-    setAddMoneyMessage(`Claim ${formatMoneyAmount(Number(ADD_MONEY_DISPLAY_AMOUNT))} for your pilot wallet. One claim is available every 24 hours.`);
+    getOrCreateAddMoneyIntent();
+    setAddMoneyMessage(`Claim ${formatMoneyAmount(ADD_MONEY_DISPLAY_AMOUNT)} for testnet use. One claim is available every 24 hours.`);
     setAddMoneyPhase('confirm');
   };
 
@@ -346,6 +370,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       setAddMoneyMessage('');
       setAddMoneyTxHash('');
       setAddMoneyRetryAfterSeconds(0);
+      clearAddMoneyIntent();
     }
   };
 
@@ -353,6 +378,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     if (!walletAddress || isAddMoneyBusy) return;
 
     try {
+      const activeIntentKey = getOrCreateAddMoneyIntent();
       setAddMoneyTxHash('');
       setAddMoneyRetryAfterSeconds(0);
       setAddMoneyMessage('Confirm with PIN or biometrics to continue...');
@@ -360,9 +386,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       await waitForUiPaint();
 
       const wallet = await getAuthenticatedWallet(
-        'Claim Pilot Credits',
-        'Enter your 6-digit PIN to claim pilot credits',
-        'Unlock wallet to claim pilot credits'
+        'Claim Testnet USDC',
+        'Enter your 6-digit PIN to claim testnet USDC',
+        'Unlock wallet to claim testnet USDC'
       );
 
       if (!wallet) {
@@ -372,16 +398,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       }
 
       if (wallet.publicKey !== walletAddress) {
-        setAddMoneyMessage('This device wallet does not match the active profile. Please sign in again before claiming pilot credits.');
+        setAddMoneyMessage('This device wallet does not match the active profile. Please sign in again before claiming testnet USDC.');
         setAddMoneyPhase('error');
+        clearAddMoneyIntent();
         return;
       }
 
-      setAddMoneyMessage('Preparing your wallet on Stellar testnet and adding pilot credits...');
+      setAddMoneyMessage('Preparing your wallet on Stellar testnet and adding USDC...');
       setAddMoneyPhase('processing');
       await waitForUiPaint();
 
-      const txHash = await requestAddMoney(wallet);
+      const txHash = await requestAddMoney(wallet, activeIntentKey);
       setAddMoneyTxHash(txHash);
 
       await saveTransaction({
@@ -391,25 +418,29 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         status: 'success',
         internal_status: 'confirmed',
         user_visible_status: 'success',
-        sender_name: 'C-Pay Pilot Credits',
+        sender_name: 'C-Pay Testnet USDC',
         recipient_name: 'Your wallet',
-        note: 'Pilot credits added',
+        note: 'Testnet USDC added',
       });
+
+      // Terminal state: clear intent
+      clearAddMoneyIntent();
 
       void loadTransactions();
       void loadBalance(walletAddress);
       setTimeout(() => loadBalance(walletAddress), 5000);
 
-      setAddMoneyMessage(`${formatMoneyAmount(Number(ADD_MONEY_DISPLAY_AMOUNT))} has been added. Your balance will refresh automatically.`);
+      setAddMoneyMessage(`${formatMoneyAmount(ADD_MONEY_DISPLAY_AMOUNT)} has been added. Your balance will refresh automatically.`);
       setAddMoneyPhase('success');
     } catch (error: any) {
-      console.error('Pilot credits error:', error);
+      Logger.error('Testnet USDC distribution error:', error);
 
       const retryAfterSeconds = getRetryAfterSecondsFromError(error);
       if (retryAfterSeconds > 0) {
         setAddMoneyRetryAfterSeconds(retryAfterSeconds);
         setAddMoneyMessage('');
         setAddMoneyPhase('cooldown');
+        clearAddMoneyIntent();
         return;
       }
 
@@ -514,7 +545,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           <View
             style={styles.balanceAmountContainer}
             accessible
-            accessibilityLabel={`${MONEY_BALANCE_LABEL}: ${parseFloat(balance).toFixed(2)} ${MONEY_SYMBOL}. Pilot credits only.`}
+            accessibilityLabel={`${MONEY_BALANCE_LABEL}: ${formatMoneyBalance(balance)} ${MONEY_UNIT_LABEL}. Testnet only.`}
           >
             <Text
               style={styles.balanceCurrency}
@@ -529,7 +560,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
               // Cap font scaling so large-text mode doesn't break the card layout
               maxFontSizeMultiplier={1.2}
             >
-              {parseFloat(balance).toFixed(2)}
+              {formatMoneyBalance(balance)}
             </Text>
           </View>
 
@@ -538,7 +569,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
             importantForAccessibility="no"
             accessibilityElementsHidden
           >
-            Pilot credits only
+            USD Coin on Stellar testnet
           </Text>
         </LinearGradient>
       </Animated.View>
@@ -565,27 +596,23 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.actionCard, addMoneyPhase !== 'idle' && styles.actionCardDisabled]}
-          onPress={handleAddMoney}
-          activeOpacity={0.8}
-          disabled={addMoneyPhase !== 'idle'}
-          accessibilityRole="button"
-          accessibilityLabel="Claim pilot credits"
-          accessibilityHint="Claim your daily pilot credit allowance"
-          accessibilityState={{ disabled: addMoneyPhase !== 'idle', busy: isAddMoneyBusy }}
+        <View
+          style={[styles.actionCard, styles.actionCardDisabled]}
+          accessibilityRole="text"
+          accessibilityLabel="Add money coming soon through a licensed partner"
         >
           <View
             style={[styles.actionIconContainer, { backgroundColor: COLORS.success + '20' }]}
             accessibilityElementsHidden
             importantForAccessibility="no"
           >
-            <Ionicons name="add-circle-outline" size={24} color={COLORS.success} />
+            <Ionicons name="add-circle-outline" size={24} color={COLORS.textMuted} />
           </View>
           <Text style={styles.actionTitle} importantForAccessibility="no-hide-descendants">
-            Claim Credits
+            Add Money
           </Text>
-        </TouchableOpacity>
+          <Text style={styles.actionSubtitle}>Licensed partner coming soon</Text>
+        </View>
 
         <TouchableOpacity
           style={styles.actionCard}
@@ -677,7 +704,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   balanceCard: {
     borderRadius: BORDER_RADIUS.xl,
     padding: SPACING.lg,
@@ -760,6 +787,12 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     textAlign: 'center',
   },
+  actionSubtitle: {
+    marginTop: 2,
+    fontSize: 9,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+  },
   transactionsList: {
     backgroundColor: COLORS.surface,
     borderRadius: BORDER_RADIUS.lg,
@@ -784,7 +817,7 @@ const styles = StyleSheet.create({
   },
   emptyDescription: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
-});
+}));

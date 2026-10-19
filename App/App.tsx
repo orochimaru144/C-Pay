@@ -9,8 +9,9 @@ import { PINDialog, CustomAlertProvider } from './src/components';
 import { setPINDialogHandler } from './src/utils/biometric';
 import { AlertManager } from './src/utils/alert';
 import { cachePinForSession, clearSessionPin, verifyPin } from './src/services/wallet';
+import { ThemeProvider, useTheme } from './src/constants/theme';
 
-export default function App() {
+const AppContent = () => {
   const [pinDialogVisible, setPinDialogVisible] = useState(false);
   const [pinDialogConfig, setPinDialogConfig] = useState({
     title: 'Enter PIN',
@@ -52,11 +53,14 @@ export default function App() {
   const handlePINConfirm = async (pin: string) => {
     setPinDialogVisible(false);
 
-    const isValid = await verifyPin(pin);
+    const result = await verifyPin(pin);
 
-    if (isValid) {
+    if (result.success) {
       cachePinForSession(pin);
       pinDialogConfig.resolve?.(pin);
+    } else if (result.error === 'STORAGE_ERROR') {
+      AlertManager.alert('Storage Error', "Couldn't access secure storage — try again.", undefined, { type: 'error' });
+      pinDialogConfig.resolve?.(null);
     } else {
       AlertManager.alert('Incorrect PIN', 'The PIN you entered is incorrect', undefined, { type: 'error' });
       pinDialogConfig.resolve?.(null);
@@ -68,12 +72,14 @@ export default function App() {
     pinDialogConfig.resolve?.(null);
   };
 
+  const { colors, isDark } = useTheme();
+
   return (
-    <GestureHandlerRootView style={styles.container}>
+    <GestureHandlerRootView style={[styles.container, { backgroundColor: colors.background }]}>
       <SafeAreaProvider>
         <CustomAlertProvider>
           <Navigation />
-          <StatusBar style="auto" />
+          <StatusBar style={isDark ? 'light' : 'dark'} />
           <PINDialog
             visible={pinDialogVisible}
             title={pinDialogConfig.title}
@@ -84,6 +90,14 @@ export default function App() {
         </CustomAlertProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
+  );
+};
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
   );
 }
 
